@@ -1,15 +1,17 @@
-
 import calendar
-import os
+import hashlib
 import re
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from urllib.parse import urlencode
 
 import pandas as pd
+import requests
 import streamlit as st
 
 st.set_page_config(page_title="오늘의 성경읽기", page_icon="📖", layout="centered")
+
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 
 BOOK_CODES = {
     "창": "gen", "출": "exo", "레": "lev", "민": "num", "신": "deu",
@@ -42,7 +44,118 @@ FULL_NAMES = {
 }
 
 WEEKDAY_KR = ["월", "화", "수", "목", "금", "토", "일"]
-PROGRESS_FILE = Path("progress.csv")
+
+
+def require_supabase():
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        st.error("Streamlit Secrets에 SUPABASE_URL과 SUPABASE_KEY를 입력해 주세요.")
+        st.stop()
+
+
+def auth_headers(token=None):
+    headers = {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
+    headers["Authorization"] = f"Bearer {token or SUPABASE_KEY}"
+    return headers
+
+
+def username_to_email(name: str) -> str:
+    clean = name.strip().lower()
+    digest = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:24]
+    return f"user_{digest}@daily-bible.local"
+
+
+def signup_name_password(display_name: str, password: str):
+    require_supabase()
+    display_name = display_name.strip()
+    if len(display_name) < 2:
+        return False, "이름은 2글자 이상 입력해 주세요."
+    if len(password) < 4:
+        return False, "비밀번호는 4자리 이상 입력해 주세요."
+
+    email = username_to_email(display_name)
+    url = f"{SUPABASE_URL}/auth/v1/signup"
+    payload = {
+        "email": email,
+        "password": password,
+        "data": {"display_name": display_name, "username": display_name},
+    }
+    r = requests.post(url, headers=auth_headers(), json=payload, timeout=20)
+    if r.status_code >= 400:
+        msg = r.json().get("msg") or r.json().get("error_description") or r.text
+        if "already" in msg.lower() or "registered" in msg.lower():
+            return False, "이미 등록된 이름입니다. 로그인해 주세요."
+        return False, f"회원가입 실패: {msg}"
+
+    data = r.json()
+    token = data.get("access_token")
+    user = data.get("user") or {}
+    user_id = user.get("id")
+    if not token or not user_id:
+        return False, "회원가입은 되었지만 이메일 확인 설정 때문에 바로 로그인되지 않았습니다. Supabase Auth에서 Confirm email을 꺼주세요."
+
+    # profile 저장
+    profile_url = f"{SUPABASE_URL}/rest/v1/profiles"
+    profile = {"id": user_id, "display_name": display_name, "username": display_name}
+    requests.post(profile_url, headers={**auth_headers(token), "Prefer": "resolution=merge-duplicates"}, json=profile, timeout=20)
+    st.session_state.auth = {"access_token": token, "user_id": user_id, "display_name": display_name}
+    return True, "회원가입 완료"
+
+
+def login_name_password(display_name: str, password: str):
+    require_supabase()
+    email = username_to_email(display_name)
+    url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
+    r = requests.post(url, headers=auth_headers(), json={"email": email, "password": password}, timeout=20)
+    if r.status_code >= 400:
+        return False, "이름 또는 비밀번호가 맞지 않습니다."
+    data = r.json()
+    token = data.get("access_token")
+    user = data.get("user") or {}
+    user_id = user.get("id")
+    st.session_state.auth = {"access_token": token, "user_id": user_id, "display_name": display_name.strip()}
+    return True, "로그인 완료"
+
+
+def logout():
+    st.session_state.pop("auth", None)
+    st.rerun()
+
+
+def render_login():
+    st.markdown("# 📖 오늘의 성경읽기")
+    st.caption("개인별 읽음 기록을 저장하려면 로그인해 주세요.")
+    tab_login, tab_signup = st.tabs(["로그인", "회원가입"])
+
+    with tab_login:
+        with st.form("login_form"):
+            name = st.text_input("이름", placeholder="예: 홍길동")
+            pw = st.text_input("비밀번호", type="password")
+            submitted = st.form_submit_button("로그인", use_container_width=True)
+        if submitted:
+            ok, msg = login_name_password(name, pw)
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+
+    with tab_signup:
+        with st.form("signup_form"):
+            name = st.text_input("이름", placeholder="예: 홍길동", key="signup_name")
+            pw = st.text_input("비밀번호", type="password", key="signup_pw")
+            pw2 = st.text_input("비밀번호 확인", type="password")
+            submitted = st.form_submit_button("회원가입", use_container_width=True)
+        if submitted:
+            if pw != pw2:
+                st.error("비밀번호가 서로 다릅니다.")
+            else:
+                ok, msg = signup_name_password(name, pw)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+    st.stop()
 
 
 def split_reference(ref: str):
@@ -95,7 +208,6 @@ def load_data():
 
 
 def lookup_date_for_plan(selected: date):
-    # 원본표의 왼쪽 날짜가 일요일 기준이어서 실제 선택일에서 하루를 빼서 CSV를 찾습니다.
     return selected - timedelta(days=1)
 
 
@@ -109,25 +221,40 @@ def find_reading(df: pd.DataFrame, selected: date):
     return row.iloc[0], lookup
 
 
-def load_progress():
-    if PROGRESS_FILE.exists():
-        df = pd.read_csv(PROGRESS_FILE, encoding="utf-8-sig")
-    else:
-        df = pd.DataFrame(columns=["date", "psalm_done", "old_done", "new_done", "updated_at"])
+def select_progress(user_id: str, token: str):
+    url = f"{SUPABASE_URL}/rest/v1/reading_checks"
+    params = {"select": "read_date,psalm_done,old_done,new_done", "user_id": f"eq.{user_id}"}
+    r = requests.get(url, headers=auth_headers(token), params=params, timeout=20)
+    if r.status_code >= 400:
+        st.error(f"읽음 기록 불러오기 실패: {r.text}")
+        return pd.DataFrame(columns=["date", "psalm_done", "old_done", "new_done"])
+    data = r.json()
+    df = pd.DataFrame(data)
+    if df.empty:
+        return pd.DataFrame(columns=["date", "psalm_done", "old_done", "new_done"])
+    df = df.rename(columns={"read_date": "date"})
     for col in ["psalm_done", "old_done", "new_done"]:
-        if col not in df.columns:
-            df[col] = False
         df[col] = df[col].fillna(False).astype(bool)
-    if "date" not in df.columns:
-        df["date"] = ""
-    if "updated_at" not in df.columns:
-        df["updated_at"] = ""
     return df
 
 
-def save_progress(df: pd.DataFrame):
-    df = df[["date", "psalm_done", "old_done", "new_done", "updated_at"]].copy()
-    df.to_csv(PROGRESS_FILE, index=False, encoding="utf-8-sig")
+def upsert_progress(user_id: str, token: str, selected: date, psalm_done: bool, old_done: bool, new_done: bool):
+    url = f"{SUPABASE_URL}/rest/v1/reading_checks"
+    params = {"on_conflict": "user_id,read_date"}
+    payload = {
+        "user_id": user_id,
+        "read_date": selected.isoformat(),
+        "psalm_done": bool(psalm_done),
+        "old_done": bool(old_done),
+        "new_done": bool(new_done),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    headers = {**auth_headers(token), "Prefer": "resolution=merge-duplicates,return=minimal"}
+    r = requests.post(url, headers=headers, params=params, json=payload, timeout=20)
+    if r.status_code >= 400:
+        st.error(f"저장 실패: {r.text}")
+        return False
+    return True
 
 
 def get_progress_row(progress: pd.DataFrame, selected: date):
@@ -137,21 +264,6 @@ def get_progress_row(progress: pd.DataFrame, selected: date):
         return {"psalm_done": False, "old_done": False, "new_done": False}
     r = row.iloc[0]
     return {"psalm_done": bool(r["psalm_done"]), "old_done": bool(r["old_done"]), "new_done": bool(r["new_done"])}
-
-
-def update_progress(selected: date, psalm_done: bool, old_done: bool, new_done: bool):
-    progress = load_progress()
-    key = selected.isoformat()
-    new_row = {
-        "date": key,
-        "psalm_done": bool(psalm_done),
-        "old_done": bool(old_done),
-        "new_done": bool(new_done),
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    progress = progress[progress["date"] != key]
-    progress = pd.concat([progress, pd.DataFrame([new_row])], ignore_index=True)
-    save_progress(progress)
 
 
 def reading_row(icon: str, label: str, ref: str, done_key: str, selected: date, current_done: bool):
@@ -187,8 +299,7 @@ def progress_count_for_date(progress: pd.DataFrame, d: date):
 
 
 def render_year_calendar(year: int, progress: pd.DataFrame, valid_dates: set):
-    cal = calendar.Calendar(firstweekday=6)  # 일요일 시작
-    month_names = ["1월", "2월", "3월", "4월", "5월", "6월", "7월", "8월", "9월", "10월", "11월", "12월"]
+    cal = calendar.Calendar(firstweekday=6)
     html = """
     <style>
     .year-grid {display:grid; grid-template-columns: repeat(3, 1fr); gap:14px;}
@@ -211,22 +322,21 @@ def render_year_calendar(year: int, progress: pd.DataFrame, valid_dates: set):
     """
     today = date.today()
     for m in range(1, 13):
-        html += f'<div class="month-box"><div class="month-title">{month_names[m-1]}</div>'
+        html += f'<div class="month-box"><div class="month-title">{m}월</div>'
         html += '<table class="cal-table"><tr><th>일</th><th>월</th><th>화</th><th>수</th><th>목</th><th>금</th><th>토</th></tr>'
         for week in cal.monthdatescalendar(year, m):
             html += "<tr>"
             for d in week:
                 if d.month != m:
                     html += '<td class="empty"></td>'
-                    continue
-                if d not in valid_dates:
+                elif d not in valid_dates:
                     html += f'<td class="none">{d.day}</td>'
-                    continue
-                cnt = progress_count_for_date(progress, d)
-                cls = "done" if cnt == 3 else ("partial" if cnt > 0 else "notdone")
-                if d == today:
-                    cls += " today"
-                html += f'<td class="{cls}"><a href="?selected={d.isoformat()}">{d.day}</a></td>'
+                else:
+                    cnt = progress_count_for_date(progress, d)
+                    cls = "done" if cnt == 3 else ("partial" if cnt > 0 else "notdone")
+                    if d == today:
+                        cls += " today"
+                    html += f'<td class="{cls}"><a href="?selected={d.isoformat()}">{d.day}</a></td>'
             html += "</tr>"
         html += "</table></div>"
     html += "</div>"
@@ -245,8 +355,18 @@ def selected_from_query():
         return date.today()
 
 
+require_supabase()
+if "auth" not in st.session_state:
+    render_login()
+
+auth = st.session_state.auth
+with st.sidebar:
+    st.success(f"{auth['display_name']}님 로그인 중")
+    if st.button("로그아웃", use_container_width=True):
+        logout()
+
 st.markdown("# 📖 오늘의 성경읽기")
-st.caption("날짜를 선택하면 통독표의 해당 요일 구절이 표시됩니다. 읽은 항목은 체크하면 진행률과 1년 달력에 반영됩니다.")
+st.caption("날짜를 선택하면 통독표의 해당 요일 구절이 표시됩니다. 개인별 읽음 기록은 Supabase에 저장됩니다.")
 
 initial_date = selected_from_query()
 selected_date = st.date_input("📅 날짜 선택", value=initial_date, format="YYYY-MM-DD")
@@ -254,7 +374,7 @@ if selected_date.isoformat() != st.query_params.get("selected", selected_date.is
     st.query_params["selected"] = selected_date.isoformat()
 
 df = load_data()
-progress = load_progress()
+progress = select_progress(auth["user_id"], auth["access_token"])
 reading, lookup_date = find_reading(df, selected_date)
 
 st.divider()
@@ -273,8 +393,8 @@ else:
     new_done = reading_row("✝️", "신약", reading["new_testament"], "new", selected_date, row_progress["new_done"])
 
     if (psalm_done, old_done, new_done) != (row_progress["psalm_done"], row_progress["old_done"], row_progress["new_done"]):
-        update_progress(selected_date, psalm_done, old_done, new_done)
-        st.rerun()
+        if upsert_progress(auth["user_id"], auth["access_token"], selected_date, psalm_done, old_done, new_done):
+            st.rerun()
 
     today_count = int(psalm_done) + int(old_done) + int(new_done)
     st.progress(today_count / 3)
@@ -286,7 +406,7 @@ else:
         st.info("오늘 읽은 항목을 체크해 주세요.")
 
 st.divider()
-progress = load_progress()
+progress = select_progress(auth["user_id"], auth["access_token"])
 valid_dates = set(reading_dates_for_year(df, selected_date.year))
 read_items = sum(progress_count_for_date(progress, d) for d in valid_dates)
 total_items = len(valid_dates) * 3
@@ -301,5 +421,8 @@ st.divider()
 st.markdown("### 🙏 오늘의 다짐")
 st.info("하나님의 말씀을 읽고 묵상하는 하루가 되게 하소서.")
 
-st.image("assets/footer_banner.png", use_container_width=True)
-st.caption("성경 본문은 앱에 저장하지 않고 공식 성경 사이트로 연결합니다. 체크 기록은 progress.csv에 저장됩니다.")
+try:
+    st.image("assets/footer_banner.png", use_container_width=True)
+except Exception:
+    pass
+st.caption("성경 본문은 앱에 저장하지 않고 공식 성경 사이트로 연결합니다.")
