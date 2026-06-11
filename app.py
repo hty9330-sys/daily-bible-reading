@@ -1,5 +1,5 @@
 import re
-from datetime import date
+from datetime import date, timedelta
 from urllib.parse import urlencode
 
 import pandas as pd
@@ -38,6 +38,8 @@ FULL_NAMES = {
     "유": "유다서", "계": "요한계시록",
 }
 
+WEEKDAY_KR = ["월", "화", "수", "목", "금", "토", "일"]
+
 
 def split_reference(ref: str):
     ref = str(ref).strip().replace(" ", "")
@@ -53,7 +55,7 @@ def split_reference(ref: str):
 
 
 def pretty_reference(ref: str) -> str:
-    book, chap = split_reference(ref)
+    book, _ = split_reference(ref)
     if not book:
         return ref
     return ref.replace(book, FULL_NAMES.get(book, book), 1)
@@ -69,14 +71,30 @@ def bsk_url(ref: str) -> str:
 
 @st.cache_data
 def load_data():
-    return pd.read_csv("readings.csv")
+    df = pd.read_csv("readings.csv")
+    df["month"] = df["month"].astype(int)
+    df["day"] = df["day"].astype(int)
+    return df
+
+
+def lookup_date_for_plan(selected: date):
+    """
+    원본 통독표의 왼쪽 '일'은 일요일 기준입니다.
+    CSV는 월~금 칸을 일요일 날짜부터 +0~+4로 입력해 둔 구조라서,
+    실제 달력 날짜에서 하루를 빼서 찾으면 월~금 칸이 정확히 맞습니다.
+    예: 실제 6/11(목) -> CSV 6/10 -> 원본표 목요일 칸.
+    """
+    return selected - timedelta(days=1)
 
 
 def find_reading(df: pd.DataFrame, selected: date):
-    row = df[(df["month"] == selected.month) & (df["day"] == selected.day)]
+    if selected.weekday() >= 5:  # 토/일
+        return None, None
+    lookup = lookup_date_for_plan(selected)
+    row = df[(df["month"] == lookup.month) & (df["day"] == lookup.day)]
     if row.empty:
-        return None
-    return row.iloc[0]
+        return None, lookup
+    return row.iloc[0], lookup
 
 
 def reading_row(icon: str, label: str, ref: str):
@@ -90,18 +108,20 @@ def reading_row(icon: str, label: str, ref: str):
 
 
 st.markdown("# 📖 오늘의 성경읽기")
-st.caption("날짜를 선택하면 그날의 통독 구절이 표시됩니다. 성경 본문은 대한성서공회 사이트에서 읽습니다.")
+st.caption("날짜를 선택하면 통독표의 해당 요일 구절이 표시됩니다. 성경 본문은 대한성서공회 사이트에서 읽습니다.")
 
 selected_date = st.date_input("📅 날짜 선택", value=date.today(), format="YYYY-MM-DD")
 
 df = load_data()
-reading = find_reading(df, selected_date)
+reading, lookup_date = find_reading(df, selected_date)
 
 st.divider()
-st.markdown(f"## {selected_date.month}월 {selected_date.day}일")
+st.markdown(f"## {selected_date.month}월 {selected_date.day}일 ({WEEKDAY_KR[selected_date.weekday()]})")
 
-if reading is None:
-    st.warning("이 날짜의 통독표가 아직 입력되지 않았습니다. readings.csv에 추가해 주세요.")
+if selected_date.weekday() >= 5:
+    st.info("이 통독표는 월~금 성경읽기 기준입니다. 월요일부터 금요일 날짜를 선택해 주세요.")
+elif reading is None:
+    st.warning("이 날짜의 통독표가 아직 입력되지 않았습니다. readings.csv를 확인해 주세요.")
 else:
     reading_row("🌿", "시편", reading["psalm"])
     st.divider()
