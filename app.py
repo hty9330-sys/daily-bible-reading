@@ -71,7 +71,25 @@ def bsk_url(ref: str) -> str:
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("readings.csv")
+    # GitHub 업로드 과정에서 CSV 헤더에 BOM/공백이 붙어도 인식되도록 보정합니다.
+    df = pd.read_csv("readings.csv", encoding="utf-8-sig")
+    df.columns = [str(c).replace("\ufeff", "").strip().lower() for c in df.columns]
+
+    # 예전 CSV 헤더가 섞여 있어도 자동으로 맞춥니다.
+    rename_map = {
+        "월": "month", "일": "day", "시편": "psalm", "구약": "old_testament", "신약": "new_testament",
+        "old": "old_testament", "new": "new_testament", "ot": "old_testament", "nt": "new_testament",
+    }
+    df = df.rename(columns=rename_map)
+
+    required = ["month", "day", "psalm", "old_testament", "new_testament"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        st.error("readings.csv의 열 이름이 맞지 않습니다.")
+        st.write("필요한 열:", required)
+        st.write("현재 열:", list(df.columns))
+        st.stop()
+
     df["month"] = df["month"].astype(int)
     df["day"] = df["day"].astype(int)
     return df
