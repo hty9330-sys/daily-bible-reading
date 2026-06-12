@@ -3,6 +3,7 @@ import calendar
 import hashlib
 import json
 import re
+import time
 from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
 
@@ -64,6 +65,7 @@ def auth_headers(token=None):
 
 
 
+
 def encode_cookie(data: dict) -> str:
     raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("utf-8")
@@ -78,6 +80,8 @@ def decode_cookie(value: str):
 
 
 def save_login_cookie(token: str, refresh_token: str, user_id: str, display_name: str):
+    if not token or not refresh_token or not user_id:
+        return
     cookie_manager.set(
         "bible_auto_login",
         encode_cookie({
@@ -146,7 +150,6 @@ def restore_login_from_cookie():
     }
     save_login_cookie(token, new_refresh_token, user_id, display_name)
 
-
 def username_to_email(name: str) -> str:
     clean = name.strip().lower()
     digest = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:24]
@@ -204,9 +207,7 @@ def login_name_password(display_name: str, password: str):
     refresh_token = data.get("refresh_token")
     user = data.get("user") or {}
     user_id = user.get("id")
-    clean_name = display_name.strip()
-    st.session_state.auth = {"access_token": token, "refresh_token": refresh_token, "user_id": user_id, "display_name": clean_name}
-    save_login_cookie(token, refresh_token, user_id, clean_name)
+    st.session_state.auth = {"access_token": token, "user_id": user_id, "display_name": display_name.strip()}
     return True, "로그인 완료"
 
 
@@ -230,6 +231,7 @@ def render_login():
             ok, msg = login_name_password(name, pw)
             if ok:
                 st.success(msg)
+                time.sleep(1.0)
                 st.rerun()
             else:
                 st.error(msg)
@@ -247,6 +249,7 @@ def render_login():
                 ok, msg = signup_name_password(name, pw)
                 if ok:
                     st.success(msg)
+                    time.sleep(1.0)
                     st.rerun()
                 else:
                     st.error(msg)
