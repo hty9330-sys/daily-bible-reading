@@ -61,7 +61,7 @@ def auth_headers(token=None):
 def username_to_email(name: str) -> str:
     clean = name.strip().lower()
     digest = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:24]
-    return f"user_{digest}@daily-bible.local"
+    return f"user_{digest}@example.com"
 
 
 def signup_name_password(display_name: str, password: str):
@@ -382,17 +382,37 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# 날짜 선택 처리
+# - 기본값은 오늘
+# - 과거 날짜 선택은 한 번만 눌러도 바로 반영
+# - 1년 달력의 날짜 링크로 들어온 경우에는 해당 날짜를 반영
+query_value = st.query_params.get("selected")
+if isinstance(query_value, list):
+    query_value = query_value[0] if query_value else None
+
 initial_date = selected_from_query()
 
+if "selected_date" not in st.session_state:
+    st.session_state["selected_date"] = initial_date
+
+if query_value and st.session_state.get("_last_query_selected") != query_value:
+    st.session_state["selected_date"] = initial_date
+    st.session_state["_last_query_selected"] = query_value
+
 if st.button("오늘 통독표 보기", use_container_width=True):
+    st.session_state["selected_date"] = today
     st.query_params["selected"] = today.isoformat()
+    st.session_state["_last_query_selected"] = today.isoformat()
     st.rerun()
 
-with st.expander("📅 과거 날짜 선택", expanded=(initial_date != today)):
-    selected_date = st.date_input("날짜 선택", value=initial_date, format="YYYY-MM-DD")
+with st.expander("📅 과거 날짜 선택", expanded=(st.session_state["selected_date"] != today)):
+    selected_date = st.date_input(
+        "날짜 선택",
+        value=st.session_state["selected_date"],
+        format="YYYY-MM-DD",
+    )
 
-if selected_date.isoformat() != st.query_params.get("selected", selected_date.isoformat()):
-    st.query_params["selected"] = selected_date.isoformat()
+st.session_state["selected_date"] = selected_date
 
 df = load_data()
 progress = select_progress(auth["user_id"], auth["access_token"])
