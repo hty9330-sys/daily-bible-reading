@@ -366,10 +366,31 @@ with st.sidebar:
         logout()
 
 st.markdown("# 📖 오늘의 성경읽기")
-st.caption("날짜를 선택하면 통독표의 해당 요일 구절이 표시됩니다. 개인별 읽음 기록은 Supabase에 저장됩니다.")
+st.caption("앱을 열면 오늘 날짜의 통독표가 자동으로 표시됩니다. 과거 날짜는 아래에서 선택할 수 있습니다.")
+
+# 화면 맨 위에 실제 오늘 날짜를 항상 표시합니다.
+today = date.today()
+st.markdown(
+    f"""
+    <div style="background:#f8fafc; border:1px solid #e5e7eb; border-radius:16px; padding:18px; margin:12px 0 18px 0; text-align:center;">
+        <div style="font-size:0.95rem; color:#64748b; font-weight:700;">📅 오늘 날짜</div>
+        <div style="font-size:1.8rem; font-weight:900; color:#111827; margin-top:4px;">
+            {today.year}년 {today.month}월 {today.day}일 ({WEEKDAY_KR[today.weekday()]})
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 initial_date = selected_from_query()
-selected_date = st.date_input("📅 날짜 선택", value=initial_date, format="YYYY-MM-DD")
+
+if st.button("오늘 통독표 보기", use_container_width=True):
+    st.query_params["selected"] = today.isoformat()
+    st.rerun()
+
+with st.expander("📅 과거 날짜 선택", expanded=(initial_date != today)):
+    selected_date = st.date_input("날짜 선택", value=initial_date, format="YYYY-MM-DD")
+
 if selected_date.isoformat() != st.query_params.get("selected", selected_date.isoformat()):
     st.query_params["selected"] = selected_date.isoformat()
 
@@ -421,18 +442,20 @@ st.divider()
 st.markdown("### 🙏 오늘의 다짐")
 st.info("하나님의 말씀을 읽고 묵상하는 하루가 되게 하소서.")
 
-st.image("assets/footer_banner.png", use_container_width=True)
+try:
+    st.image("assets/footer_banner.png", use_container_width=True)
+except Exception:
+    pass
 
 st.divider()
-
 st.markdown(
     """
-    <div style="text-align:center; color:#666; font-size:0.9rem;">
+    <div style="text-align:center; color:#666; font-size:0.9rem; line-height:1.7;">
     📖 성경 본문은 대한성서공회 성경플랫폼을 통해 제공됩니다.<br><br>
     본 웹앱은 성경 본문을 저장하거나 제공하지 않으며,<br>
     읽기 버튼을 통해 대한성서공회 성경플랫폼으로 연결됩니다.<br><br>
     성경 저작권 © 대한성서공회
     </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
