@@ -13,11 +13,10 @@ import extra_streamlit_components as stx
 
 st.set_page_config(page_title="오늘의 성경읽기", page_icon="📖", layout="centered")
 
+cookie_manager = stx.CookieManager()
+
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
-
-AUTO_LOGIN_COOKIE = "bible_auto_login_v1"
-cookie_manager = stx.CookieManager()
 
 BOOK_CODES = {
     "창": "gen", "출": "exo", "레": "lev", "민": "num", "신": "deu",
@@ -52,92 +51,6 @@ FULL_NAMES = {
 WEEKDAY_KR = ["월", "화", "수", "목", "금", "토", "일"]
 
 
-def encode_cookie(payload: dict) -> str:
-    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("utf-8")
-
-
-def decode_cookie(value: str) -> dict:
-    raw = base64.urlsafe_b64decode(value.encode("utf-8"))
-    return json.loads(raw.decode("utf-8"))
-
-
-def save_login_cookie(refresh_token: str, user_id: str, display_name: str):
-    if not refresh_token or not user_id:
-        return
-    cookie_manager.set(
-        AUTO_LOGIN_COOKIE,
-        encode_cookie({
-            "refresh_token": refresh_token,
-            "user_id": user_id,
-            "display_name": display_name,
-        }),
-        expires_at=datetime.now() + timedelta(days=90),
-    )
-
-
-def clear_login_cookie():
-    try:
-        cookie_manager.delete(AUTO_LOGIN_COOKIE)
-    except Exception:
-        pass
-
-
-def set_auth_session(data: dict, display_name: str):
-    token = data.get("access_token")
-    refresh_token = data.get("refresh_token")
-    user = data.get("user") or {}
-    user_id = user.get("id")
-
-    if not token or not user_id:
-        return False
-
-    st.session_state.auth = {
-        "access_token": token,
-        "refresh_token": refresh_token,
-        "user_id": user_id,
-        "display_name": display_name.strip(),
-    }
-    save_login_cookie(refresh_token, user_id, display_name.strip())
-    return True
-
-
-def try_auto_login_from_cookie():
-    if "auth" in st.session_state:
-        return
-
-    cookie_value = cookie_manager.get(AUTO_LOGIN_COOKIE)
-    if not cookie_value:
-        return
-
-    try:
-        saved = decode_cookie(cookie_value)
-        refresh_token = saved.get("refresh_token")
-        display_name = saved.get("display_name", "")
-        if not refresh_token:
-            clear_login_cookie()
-            return
-
-        url = f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token"
-        r = requests.post(
-            url,
-            headers=auth_headers(),
-            json={"refresh_token": refresh_token},
-            timeout=20,
-        )
-
-        if r.status_code >= 400:
-            clear_login_cookie()
-            return
-
-        data = r.json()
-        if not set_auth_session(data, display_name):
-            clear_login_cookie()
-
-    except Exception:
-        clear_login_cookie()
-
-
 def require_supabase():
     if not SUPABASE_URL or not SUPABASE_KEY:
         st.error("Streamlit Secrets에 SUPABASE_URL과 SUPABASE_KEY를 입력해 주세요.")
@@ -148,6 +61,90 @@ def auth_headers(token=None):
     headers = {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
     headers["Authorization"] = f"Bearer {token or SUPABASE_KEY}"
     return headers
+
+
+
+def encode_cookie(data: dict) -> str:
+    raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8")
+
+
+def decode_cookie(value: str):
+    try:
+        raw = base64.urlsafe_b64decode(value.encode("utf-8"))
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def save_login_cookie(token: str, refresh_token: str, user_id: str, display_name: str):
+    cookie_manager.set(
+        "bible_auto_login",
+        encode_cookie({
+            "access_token": token,
+            "refresh_token": refresh_token,
+            "user_id": user_id,
+            "display_name": display_name,
+        }),
+        expires_at=datetime.now() + timedelta(days=90),
+    )
+
+
+def clear_login_cookie():
+    try:
+        cookie_manager.delete("bible_auto_login")
+    except Exception:
+        pass
+
+
+def refresh_session(refresh_token: str):
+    if not refresh_token:
+        return None
+    url = f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token"
+    try:
+        r = requests.post(
+            url,
+            headers=auth_headers(),
+            json={"refresh_token": refresh_token},
+            timeout=20,
+        )
+    except Exception:
+        return None
+    if r.status_code >= 400:
+        return None
+    data = r.json()
+    token = data.get("access_token")
+    new_refresh_token = data.get("refresh_token") or refresh_token
+    user = data.get("user") or {}
+    user_id = user.get("id")
+    if not token or not user_id:
+        return None
+    return token, new_refresh_token, user_id
+
+
+def restore_login_from_cookie():
+    if "auth" in st.session_state:
+        return
+    cookie_value = cookie_manager.get("bible_auto_login")
+    if not cookie_value:
+        return
+    saved = decode_cookie(cookie_value)
+    if not saved:
+        clear_login_cookie()
+        return
+    refreshed = refresh_session(saved.get("refresh_token", ""))
+    if not refreshed:
+        clear_login_cookie()
+        return
+    token, new_refresh_token, user_id = refreshed
+    display_name = saved.get("display_name", "")
+    st.session_state.auth = {
+        "access_token": token,
+        "refresh_token": new_refresh_token,
+        "user_id": user_id,
+        "display_name": display_name,
+    }
+    save_login_cookie(token, new_refresh_token, user_id, display_name)
 
 
 def username_to_email(name: str) -> str:
@@ -180,6 +177,7 @@ def signup_name_password(display_name: str, password: str):
 
     data = r.json()
     token = data.get("access_token")
+    refresh_token = data.get("refresh_token")
     user = data.get("user") or {}
     user_id = user.get("id")
     if not token or not user_id:
@@ -189,8 +187,8 @@ def signup_name_password(display_name: str, password: str):
     profile_url = f"{SUPABASE_URL}/rest/v1/profiles"
     profile = {"id": user_id, "display_name": display_name, "username": display_name}
     requests.post(profile_url, headers={**auth_headers(token), "Prefer": "resolution=merge-duplicates"}, json=profile, timeout=20)
-
-    set_auth_session(data, display_name)
+    st.session_state.auth = {"access_token": token, "refresh_token": refresh_token, "user_id": user_id, "display_name": display_name}
+    save_login_cookie(token, refresh_token, user_id, display_name)
     return True, "회원가입 완료"
 
 
@@ -202,8 +200,13 @@ def login_name_password(display_name: str, password: str):
     if r.status_code >= 400:
         return False, "이름 또는 비밀번호가 맞지 않습니다."
     data = r.json()
-    if not set_auth_session(data, display_name):
-        return False, "로그인 정보를 저장하지 못했습니다. 다시 시도해 주세요."
+    token = data.get("access_token")
+    refresh_token = data.get("refresh_token")
+    user = data.get("user") or {}
+    user_id = user.get("id")
+    clean_name = display_name.strip()
+    st.session_state.auth = {"access_token": token, "refresh_token": refresh_token, "user_id": user_id, "display_name": clean_name}
+    save_login_cookie(token, refresh_token, user_id, clean_name)
     return True, "로그인 완료"
 
 
@@ -448,8 +451,7 @@ def selected_from_query():
 
 
 require_supabase()
-try_auto_login_from_cookie()
-
+restore_login_from_cookie()
 if "auth" not in st.session_state:
     render_login()
 
