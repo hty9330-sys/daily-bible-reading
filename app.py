@@ -421,8 +421,7 @@ st.divider()
 st.markdown("### 🙏 오늘의 다짐")
 st.info("하나님의 말씀을 읽고 묵상하는 하루가 되게 하소서.")
 
-try:
-    st.image("assets/footer_banner.png", use_container_width=True)
+st.image("assets/footer_banner.png", use_container_width=True)
 
 st.divider()
 
