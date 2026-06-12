@@ -423,6 +423,17 @@ st.info("하나님의 말씀을 읽고 묵상하는 하루가 되게 하소서."
 
 try:
     st.image("assets/footer_banner.png", use_container_width=True)
-except Exception:
-    pass
-st.caption("성경 본문은 앱에 저장하지 않고 공식 성경 사이트로 연결합니다.")
+
+st.divider()
+
+st.markdown(
+    """
+    <div style="text-align:center; color:#666; font-size:0.9rem;">
+    📖 성경 본문은 대한성서공회 성경플랫폼을 통해 제공됩니다.<br><br>
+    본 웹앱은 성경 본문을 저장하거나 제공하지 않으며,<br>
+    읽기 버튼을 통해 대한성서공회 성경플랫폼으로 연결됩니다.<br><br>
+    성경 저작권 © 대한성서공회
+    </div>
+    """,
+    unsafe_allow_html=True
+)
