@@ -7,15 +7,11 @@ from urllib.parse import urlencode
 import pandas as pd
 import requests
 import streamlit as st
-import extra_streamlit_components as stx
 
 st.set_page_config(page_title="오늘의 성경읽기", page_icon="📖", layout="centered")
 
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
-
-# 이름은 앱에서 기억하고, 비밀번호는 크롬/사파리의 비밀번호 저장 기능을 사용합니다.
-cookie_manager = stx.CookieManager()
 
 BOOK_CODES = {
     "창": "gen", "출": "exo", "레": "lev", "민": "num", "신": "deu",
@@ -61,32 +57,6 @@ def auth_headers(token=None):
     headers["Authorization"] = f"Bearer {token or SUPABASE_KEY}"
     return headers
 
-
-
-def get_remembered_name() -> str:
-    try:
-        value = cookie_manager.get("bible_remembered_name")
-        return value or ""
-    except Exception:
-        return ""
-
-
-def save_remembered_name(display_name: str):
-    try:
-        cookie_manager.set(
-            "bible_remembered_name",
-            display_name.strip(),
-            expires_at=datetime.now() + timedelta(days=365),
-        )
-    except Exception:
-        pass
-
-
-def clear_remembered_name():
-    try:
-        cookie_manager.delete("bible_remembered_name")
-    except Exception:
-        pass
 
 def username_to_email(name: str) -> str:
     clean = name.strip().lower()
@@ -152,27 +122,18 @@ def logout():
 
 
 def render_login():
-    remembered_name = get_remembered_name()
-
     st.markdown("# 📖 오늘의 성경읽기")
     st.caption("개인별 읽음 기록을 저장하려면 로그인해 주세요.")
-    st.info("이름은 앱에서 기억할 수 있습니다. 비밀번호는 휴대폰/브라우저에서 '비밀번호 저장'을 허용하면 다음부터 자동 입력됩니다.")
-
     tab_login, tab_signup = st.tabs(["로그인", "회원가입"])
 
     with tab_login:
         with st.form("login_form"):
-            name = st.text_input("이름", value=remembered_name, placeholder="예: 홍길동")
+            name = st.text_input("이름", placeholder="예: 홍길동")
             pw = st.text_input("비밀번호", type="password")
-            remember_name = st.checkbox("이름 기억하기", value=True)
             submitted = st.form_submit_button("로그인", use_container_width=True)
         if submitted:
             ok, msg = login_name_password(name, pw)
             if ok:
-                if remember_name:
-                    save_remembered_name(name)
-                else:
-                    clear_remembered_name()
                 st.success(msg)
                 st.rerun()
             else:
@@ -180,10 +141,9 @@ def render_login():
 
     with tab_signup:
         with st.form("signup_form"):
-            name = st.text_input("이름", value=remembered_name, placeholder="예: 홍길동", key="signup_name")
+            name = st.text_input("이름", placeholder="예: 홍길동", key="signup_name")
             pw = st.text_input("비밀번호", type="password", key="signup_pw")
             pw2 = st.text_input("비밀번호 확인", type="password")
-            remember_name = st.checkbox("가입 후 이름 기억하기", value=True)
             submitted = st.form_submit_button("회원가입", use_container_width=True)
         if submitted:
             if pw != pw2:
@@ -191,13 +151,12 @@ def render_login():
             else:
                 ok, msg = signup_name_password(name, pw)
                 if ok:
-                    if remember_name:
-                        save_remembered_name(name)
                     st.success(msg)
                     st.rerun()
                 else:
                     st.error(msg)
     st.stop()
+
 
 def split_reference(ref: str):
     ref = str(ref).strip().replace(" ", "")
