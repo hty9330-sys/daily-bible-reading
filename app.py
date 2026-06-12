@@ -1,9 +1,6 @@
-import base64
 import calendar
 import hashlib
-import json
 import re
-import time
 from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
 
@@ -14,10 +11,11 @@ import extra_streamlit_components as stx
 
 st.set_page_config(page_title="오늘의 성경읽기", page_icon="📖", layout="centered")
 
-cookie_manager = stx.CookieManager()
-
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+
+# 이름은 앱에서 기억하고, 비밀번호는 크롬/사파리의 비밀번호 저장 기능을 사용합니다.
+cookie_manager = stx.CookieManager()
 
 BOOK_CODES = {
     "창": "gen", "출": "exo", "레": "lev", "민": "num", "신": "deu",
@@ -65,90 +63,30 @@ def auth_headers(token=None):
 
 
 
-
-def encode_cookie(data: dict) -> str:
-    raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("utf-8")
-
-
-def decode_cookie(value: str):
+def get_remembered_name() -> str:
     try:
-        raw = base64.urlsafe_b64decode(value.encode("utf-8"))
-        return json.loads(raw.decode("utf-8"))
+        value = cookie_manager.get("bible_remembered_name")
+        return value or ""
     except Exception:
-        return None
+        return ""
 
 
-def save_login_cookie(token: str, refresh_token: str, user_id: str, display_name: str):
-    if not token or not refresh_token or not user_id:
-        return
-    cookie_manager.set(
-        "bible_auto_login",
-        encode_cookie({
-            "access_token": token,
-            "refresh_token": refresh_token,
-            "user_id": user_id,
-            "display_name": display_name,
-        }),
-        expires_at=datetime.now() + timedelta(days=90),
-    )
-
-
-def clear_login_cookie():
+def save_remembered_name(display_name: str):
     try:
-        cookie_manager.delete("bible_auto_login")
+        cookie_manager.set(
+            "bible_remembered_name",
+            display_name.strip(),
+            expires_at=datetime.now() + timedelta(days=365),
+        )
     except Exception:
         pass
 
 
-def refresh_session(refresh_token: str):
-    if not refresh_token:
-        return None
-    url = f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token"
+def clear_remembered_name():
     try:
-        r = requests.post(
-            url,
-            headers=auth_headers(),
-            json={"refresh_token": refresh_token},
-            timeout=20,
-        )
+        cookie_manager.delete("bible_remembered_name")
     except Exception:
-        return None
-    if r.status_code >= 400:
-        return None
-    data = r.json()
-    token = data.get("access_token")
-    new_refresh_token = data.get("refresh_token") or refresh_token
-    user = data.get("user") or {}
-    user_id = user.get("id")
-    if not token or not user_id:
-        return None
-    return token, new_refresh_token, user_id
-
-
-def restore_login_from_cookie():
-    if "auth" in st.session_state:
-        return
-    cookie_value = cookie_manager.get("bible_auto_login")
-    if not cookie_value:
-        return
-    saved = decode_cookie(cookie_value)
-    if not saved:
-        clear_login_cookie()
-        return
-    refreshed = refresh_session(saved.get("refresh_token", ""))
-    if not refreshed:
-        clear_login_cookie()
-        return
-    token, new_refresh_token, user_id = refreshed
-    display_name = saved.get("display_name", "")
-    st.session_state.auth = {
-        "access_token": token,
-        "refresh_token": new_refresh_token,
-        "user_id": user_id,
-        "display_name": display_name,
-    }
-    save_login_cookie(token, new_refresh_token, user_id, display_name)
+        pass
 
 def username_to_email(name: str) -> str:
     clean = name.strip().lower()
@@ -180,7 +118,6 @@ def signup_name_password(display_name: str, password: str):
 
     data = r.json()
     token = data.get("access_token")
-    refresh_token = data.get("refresh_token")
     user = data.get("user") or {}
     user_id = user.get("id")
     if not token or not user_id:
@@ -190,8 +127,7 @@ def signup_name_password(display_name: str, password: str):
     profile_url = f"{SUPABASE_URL}/rest/v1/profiles"
     profile = {"id": user_id, "display_name": display_name, "username": display_name}
     requests.post(profile_url, headers={**auth_headers(token), "Prefer": "resolution=merge-duplicates"}, json=profile, timeout=20)
-    st.session_state.auth = {"access_token": token, "refresh_token": refresh_token, "user_id": user_id, "display_name": display_name}
-    save_login_cookie(token, refresh_token, user_id, display_name)
+    st.session_state.auth = {"access_token": token, "user_id": user_id, "display_name": display_name}
     return True, "회원가입 완료"
 
 
@@ -204,7 +140,6 @@ def login_name_password(display_name: str, password: str):
         return False, "이름 또는 비밀번호가 맞지 않습니다."
     data = r.json()
     token = data.get("access_token")
-    refresh_token = data.get("refresh_token")
     user = data.get("user") or {}
     user_id = user.get("id")
     st.session_state.auth = {"access_token": token, "user_id": user_id, "display_name": display_name.strip()}
@@ -212,35 +147,43 @@ def login_name_password(display_name: str, password: str):
 
 
 def logout():
-    clear_login_cookie()
     st.session_state.pop("auth", None)
     st.rerun()
 
 
 def render_login():
+    remembered_name = get_remembered_name()
+
     st.markdown("# 📖 오늘의 성경읽기")
     st.caption("개인별 읽음 기록을 저장하려면 로그인해 주세요.")
+    st.info("이름은 앱에서 기억할 수 있습니다. 비밀번호는 휴대폰/브라우저에서 '비밀번호 저장'을 허용하면 다음부터 자동 입력됩니다.")
+
     tab_login, tab_signup = st.tabs(["로그인", "회원가입"])
 
     with tab_login:
         with st.form("login_form"):
-            name = st.text_input("이름", placeholder="예: 홍길동")
+            name = st.text_input("이름", value=remembered_name, placeholder="예: 홍길동")
             pw = st.text_input("비밀번호", type="password")
+            remember_name = st.checkbox("이름 기억하기", value=True)
             submitted = st.form_submit_button("로그인", use_container_width=True)
         if submitted:
             ok, msg = login_name_password(name, pw)
             if ok:
+                if remember_name:
+                    save_remembered_name(name)
+                else:
+                    clear_remembered_name()
                 st.success(msg)
-                time.sleep(1.0)
                 st.rerun()
             else:
                 st.error(msg)
 
     with tab_signup:
         with st.form("signup_form"):
-            name = st.text_input("이름", placeholder="예: 홍길동", key="signup_name")
+            name = st.text_input("이름", value=remembered_name, placeholder="예: 홍길동", key="signup_name")
             pw = st.text_input("비밀번호", type="password", key="signup_pw")
             pw2 = st.text_input("비밀번호 확인", type="password")
+            remember_name = st.checkbox("가입 후 이름 기억하기", value=True)
             submitted = st.form_submit_button("회원가입", use_container_width=True)
         if submitted:
             if pw != pw2:
@@ -248,13 +191,13 @@ def render_login():
             else:
                 ok, msg = signup_name_password(name, pw)
                 if ok:
+                    if remember_name:
+                        save_remembered_name(name)
                     st.success(msg)
-                    time.sleep(1.0)
                     st.rerun()
                 else:
                     st.error(msg)
     st.stop()
-
 
 def split_reference(ref: str):
     ref = str(ref).strip().replace(" ", "")
@@ -454,7 +397,6 @@ def selected_from_query():
 
 
 require_supabase()
-restore_login_from_cookie()
 if "auth" not in st.session_state:
     render_login()
 
